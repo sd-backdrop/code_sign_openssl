@@ -1,0 +1,7 @@
+name = OpenSSL Code Sign
+description = OpeSSL-based Code Sign engine modules.
+package = Security
+version = 1.x
+backdrop = 1.x
+type = module
+dependencies[] = code_sign

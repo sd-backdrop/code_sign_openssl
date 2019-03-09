@@ -1,0 +1,53 @@
+<?php
+
+/**
+ * Implements hook_code_sign_info().
+ */
+function code_sign_openssl_code_sign_info() {
+  $signers = array();
+
+  $signers['openssl'] = array(
+    'title' => t('OpenSSL'),
+    'sign callback' => 'code_sign_openssl_sign',
+    'verify callback' => 'code_sign_openssl_verify',
+    'status callback' => 'code_sign_openssl_status',
+    'public keychain callback' => 'code_sign_openssl_get_ca_list',
+    'private keychain callback' => 'code_sign_openssl_get_signing_certs',
+    'file' => backdrop_get_path('module', 'code_sign_openssl') . '/openssl.codesign.inc',
+  );
+
+  return $signers;
+}
+
+/**
+ * Implements hook_menu().
+ */
+function code_sign_openssl_menu() {
+  $items = array();
+
+  $items['admin/config/system/code-sign/openssl'] = array(
+    'title' => 'OpenSSL',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => array('code_sign_openssl_admin_form'),
+    'access arguments' => array('administer site configuration'),
+    'type' => MENU_LOCAL_TASK,
+    'file' => 'code_sign_openssl.admin.inc',
+  );
+  $items['admin/config/system/code-sign/openssl/settings'] = array(
+    'title' => 'Settings',
+    'weight' => -10,
+    'type' => MENU_DEFAULT_LOCAL_TASK,
+  );
+  $items['admin/config/system/code-sign/openssl/private_keys'] = array(
+    'title' => 'Signing Key',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => array('code_sign_openssl_signing_key_form'),
+    'access arguments' => array('administer site configuration'),
+    'type' => MENU_LOCAL_TASK,
+    'file' => 'code_sign_openssl.admin.inc',
+  );
+
+  return $items;
+}
+
+

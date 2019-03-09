@@ -1,0 +1,22 @@
+<?php
+
+
+/**
+ * Implements hook_requirements.
+ */
+function code_sign_openssl_requirements($phase = NULL) {
+  $requirements = array();
+
+  if ($phase == 'runtime') {
+    $openssl_loaded = extension_loaded('openssl');
+    $requirements['code_sign_openssl'] = array(
+      'title' => 'OpenSSL version',
+      'value' => $openssl_loaded ? OPENSSL_VERSION_TEXT : t('OpenSSL extension not loaded.'),
+      'severity' => $openssl_loaded ? REQUIREMENT_OK : REQUIREMENT_ERROR,
+      'description' => t('The OpenSSL extension can be used to verify the authenticity and integrity of loaded modules.'),
+    );
+  }
+
+  return $requirements;
+}
+
