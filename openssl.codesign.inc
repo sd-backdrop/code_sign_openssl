@@ -8,6 +8,8 @@ define('CERT_INVALID_REVOKED', 0x83);
 
 
 function code_sign_openssl_sign($profile, $data, $options = array()) {
+  $config = config('code_sign_openssl.settings');
+
   $options += array(
     'cert_days' => 365,
   );
@@ -48,14 +50,8 @@ function code_sign_openssl_sign($profile, $data, $options = array()) {
   $pubKey = openssl_pkey_get_details($options['private_key']);
 
   $signature = '';
-  $success = openssl_sign($data, $signature, $options['private_key'], OPENSSL_ALGO_SHA256);
-
-  $code_sig = code_sign_openssl_build_signature($cert, 'sha256', $signature);
-
-  // Did we do it right?
-  $sig_check = code_sign_openssl_verify($data, $code_sig);
-
-  return $code_sig;
+  $success = openssl_sign($data, $signature, $options['private_key'], $config->get('default_hash'));
+  return ($success) ? code_sign_openssl_build_signature($cert, $config->get('default_hash'), $signature) : NULL;
 }
 
 function code_sign_openssl_verify($data, $signature = NULL, $options = array()) {
@@ -170,7 +166,7 @@ function code_sign_openssl_status() {
   $rows = array();
   foreach ($ca_list as $ca) {
     $rows[] = array(
-      $ca['details']['subject']['CN'],
+      empty($ca['details']['subject']['CN']) ? $ca['details']['name'] : $ca['details']['subject']['CN'],
       $ca['details']['extensions']['subjectKeyIdentifier'],
       format_date($ca['details']['validTo_time_t']),
     );
@@ -227,10 +223,8 @@ function code_sign_openssl_load_pem($pem) {
             );
           }
           else {
-            $cert_list['certs'][] = array(
-              'cert' => $cert_res,
-              'pubkey' => openssl_pkey_get_public($cert),
-            );
+            watchdog('openssl', 'Certificate @cn has no subjectKeyIdentifier.  Ignoring.',
+              array('@cn' => $parsed_cert['name']), WATCHDOG_WARNING);
           }
           break;
         case 'PUBLIC KEY':
@@ -241,19 +235,22 @@ function code_sign_openssl_load_pem($pem) {
         case 'RSA PRIVATE KEY':
         case 'PRIVATE KEY':
           $key_res = openssl_pkey_get_private($cert);
-          $parsed_key = openssl_pkey_get_details($key_res);
-          $cert_list['private keys'][] = $key_res;
+          if ($key_res) {
+            $cert_list['private keys'][] = $key_res;
+          }
           break;
         case 'PKCS7':
           // $pkcs7_certs = array();
           // openssl_pkcs7_read($cert, $pkcs7_certs);
           // $cert_list['pkcs7'][] = $pkcs7_certs;
+          watchdog('openssl', 'PKCS7 are not supported.', array(), WATCHDOG_wARNING);
           break;
         case 'CODESIGN':
           $cert_list['signature'][] = code_sign_openssl_parse_signature($cert);
           break;
         default:
-          printf("Ignoring unknown resource type: %s\n", $type);
+          watchdog('openssl', 'Ignoring unknown resource type @type',
+            array('@type' => $type), WATCHDOG_WARNING);
       }
       $cert = '';
     }
@@ -273,14 +270,14 @@ function code_sign_openssl_cert_signed_by_valid_ca($cert, $intermediate_certs, $
   // Check the CA list first.
   if (in_array($authority_key_id, array_keys($ca_list))) {
     $parsed_ca_cert = openssl_x509_parse($ca_list[$authority_key_id]);
-    return array($parsed_ca_cert['subject']['CN'] => $ca_list[$authority_key_id]);
+    return array($parsed_ca_cert['subject']['name'] => $ca_list[$authority_key_id]);
   }
 
   // Not there?  Check the intermediate certs and try again.
   if (in_array($authority_key_id, array_keys($intermediate_certs))) {
     $parsed_int_cert = openssl_x509_parse($intermediate_certs[$authority_key_id]);
     $chain = code_sign_openssl_cert_signed_by_valid_ca($intermediate_certs[$authority_key_id], $intermediate_certs, $depth+1);
-    return is_array($chain) ? array_merge($chain, array($parsed_int_cert['subject']['CN'] => $parsed_int_cert)) : FALSE;
+    return is_array($chain) ? array_merge($chain, array($parsed_int_cert['subject']['name'] => $parsed_int_cert)) : FALSE;
   }
 
   return FALSE;
@@ -335,7 +332,7 @@ function code_sign_openssl_get_ca_list() {
 
   if (!$ca_list) {
     // Load up the CA list.
-    foreach (glob(BACKDROP_ROOT . '/core/misc/codesign/openssl/ca/*.pem') as $file) {
+    foreach (glob(BACKDROP_ROOT . '/core/misc/codesign/openssl/ca/*') as $file) {
       $cert_list = code_sign_openssl_load_pem(file_get_contents($file));
       foreach ($cert_list['certs'] as $id => $cert) {
         // Skip invalid certs and non-CA certs.
@@ -350,24 +347,10 @@ function code_sign_openssl_get_ca_list() {
     }
   }
 
-
-  // If not supplied in $options, create a new keypair
-  if (empty($options['private_key'])) {
-    $options['private_key'] = openssl_pkey_new(array(
-      "digest_alg" => "sha512",
-      "private_key_bits" => 4096,
-      "private_key_type" => OPENSSL_KEYTYPE_RSA,
-    ));
-  }
-
-  openssl_pkey_export($options['private_key'], $privKey);
-
-  $pubKey = openssl_pkey_get_details($options['private_key']);
-
   return $ca_list;
 }
 
-function  code_sign_openssl_get_signing_certs() {
+function code_sign_openssl_get_signing_certs() {
   $all_certs = &backdrop_static(__FUNCTION__, array());
 
   // Return cached keychain if available.
@@ -383,8 +366,14 @@ function  code_sign_openssl_get_signing_certs() {
 
   // Read all the PEM files, build a list of resources (certs and keys)
   $key_list = array();
-  foreach(glob($private_key_directory . '/*.pem') as $file) {
-    $key_list = array_merge($key_list, code_sign_openssl_load_pem(file_get_contents($file)));
+  foreach(glob($private_key_directory . '/*') as $file) {
+    $new_items = code_sign_openssl_load_pem(file_get_contents($file));
+    foreach ($new_items as $type => $items) {
+      if (empty($key_list[$type])) {
+        $key_list[$type] = array();
+      }
+      $key_list[$type] = array_merge($key_list[$type], $items);
+    }
   }
 
   // Pair private keys with their certs.
